@@ -40,6 +40,8 @@
 #define HTTP_PORT 9460
 #define HTTP_MAX_CLIENTS 16
 #define HTTP_REQ_MAX 4096
+#define MODEM_RESPONSE_MAX 32768
+#define NEIGHBOR_RAW_MAX 8192
 
 #define RAW_MAX 32768
 #define SMS_RESPONSE_MAX 1048576
@@ -132,6 +134,26 @@ static int run_ubus(const char *svc, const char *method, const char *args,
     return n > 0 ? 0 : -1;
 }
 
+static int text_present(const char *s)
+{
+    if (!s) return 0;
+    while (*s && isspace((unsigned char)*s)) s++;
+    return *s != 0;
+}
+
+static void trim_ascii(char *s)
+{
+    char *start;
+    char *end;
+
+    if (!s) return;
+    start = s;
+    while (*start && isspace((unsigned char)*start)) start++;
+    if (start != s) memmove(s, start, strlen(start) + 1);
+    end = s + strlen(s);
+    while (end > s && isspace((unsigned char)end[-1])) *--end = 0;
+}
+
 /* ---- append helpers for building the snapshot ---- */
 struct buf { char *p; size_t cap; size_t len; };
 
@@ -159,6 +181,146 @@ static void bappend_json_esc(struct buf *b, const char *s)
         else if ((unsigned char)*c < 0x20) bappend(b, " ");
         else bappend(b, "%c", *c);
     }
+}
+
+static void append_neighbor_array(struct buf *b, const char *raw, int is_nr)
+{
+    char work[NEIGHBOR_RAW_MAX];
+    char *records;
+    char *record;
+    int first = 1;
+
+    bappend(b, "[");
+    if (!text_present(raw)) {
+        bappend(b, "]");
+        return;
+    }
+
+    snprintf(work, sizeof work, "%s", raw);
+    records = work;
+    while ((record = strsep(&records, ";")) != NULL) {
+        char *fields[5] = { "", "", "", "", "" };
+        char *cursor = record;
+        int field_count = 0;
+
+        trim_ascii(record);
+        if (!record[0]) continue;
+        while (field_count < 5 && cursor) {
+            fields[field_count] = strsep(&cursor, ",");
+            if (!fields[field_count]) fields[field_count] = "";
+            trim_ascii(fields[field_count]);
+            field_count++;
+        }
+
+        /* Stock WebUI defines records as PCI,ARFCN/EARFCN,band,RSRP;. */
+        if (!text_present(fields[0]) && !text_present(fields[1]) &&
+            !text_present(fields[3]))
+            continue;
+        if (!first) bappend(b, ",");
+        first = 0;
+        bappend(b, "{\"pci\":\"");
+        bappend_json_esc(b, fields[0]);
+        bappend(b, "\",\"%s\":\"", is_nr ? "nrarfcn" : "earfcn");
+        bappend_json_esc(b, fields[1]);
+        bappend(b, "\",\"band\":\"");
+        bappend_json_esc(b, fields[2]);
+        bappend(b, "\",\"rsrp\":\"");
+        bappend_json_esc(b, fields[3]);
+        bappend(b, "\"");
+        if (field_count > 4 && text_present(fields[4])) {
+            bappend(b, ",\"rsrq\":\"");
+            bappend_json_esc(b, fields[4]);
+            bappend(b, "\"");
+        }
+        bappend(b, "}");
+    }
+    bappend(b, "]");
+}
+
+static void pick_neighbor_raw(const char *net, const char *dedicated,
+                              const char *net_key, const char *dedicated_key,
+                              char *out, size_t outlen)
+{
+    char value[NEIGHBOR_RAW_MAX];
+
+    out[0] = 0;
+    if (dedicated && json_get(dedicated, dedicated_key, value, sizeof value) &&
+        text_present(value)) {
+        snprintf(out, outlen, "%s", value);
+        return;
+    }
+    if (net && json_get(net, net_key, value, sizeof value) && text_present(value))
+        snprintf(out, outlen, "%s", value);
+}
+
+static void build_signal_metrics_json(char *out, size_t outlen)
+{
+    char net[RAW_MAX];
+    char lte_resp[NEIGHBOR_RAW_MAX];
+    char nr_resp[NEIGHBOR_RAW_MAX];
+    char lte_raw[NEIGHBOR_RAW_MAX];
+    char nr_raw[NEIGHBOR_RAW_MAX];
+    char cell_key[96];
+    struct buf b = { out, outlen, 0 };
+
+    net[0] = lte_resp[0] = nr_resp[0] = 0;
+    run_ubus("zte_nwinfo_api", "nwinfo_get_netinfo", NULL, net, sizeof net);
+    run_ubus("zte_nwinfo_api", "nwinfo_get_lte_nbr_contents", NULL,
+             lte_resp, sizeof lte_resp);
+    run_ubus("zte_nwinfo_api", "nwinfo_get_nr5g_nbr_contents", NULL,
+             nr_resp, sizeof nr_resp);
+    pick_neighbor_raw(net, lte_resp, "lte_neighbor_cell", "lte_nbr_contents",
+                      lte_raw, sizeof lte_raw);
+    pick_neighbor_raw(net, nr_resp, "nr_neighbor_cell", "nr5g_nbr_contents",
+                      nr_raw, sizeof nr_raw);
+
+    cell_key[0] = 0;
+    if (!json_get(net, "nr5g_cell_id", cell_key, sizeof cell_key))
+        json_get(net, "lte_cell_id", cell_key, sizeof cell_key);
+
+    bappend(&b, "{\"source\":\"zte_nwinfo_api neighbor cache\",");
+    bappend(&b, "\"status\":\"%s\",", text_present(lte_raw) || text_present(nr_raw) ?
+            "ready" : "empty");
+    bappend(&b, "\"updated_at\":%ld,\"cell_key\":\"", (long)time(NULL));
+    bappend_json_esc(&b, cell_key);
+    bappend(&b, "\",\"lte\":{\"neighbors\":");
+    append_neighbor_array(&b, lte_raw, 0);
+    bappend(&b, "},\"nr\":{\"neighbors\":");
+    append_neighbor_array(&b, nr_raw, 1);
+    bappend(&b, "}}");
+}
+
+static int path_has_flag(const char *path, const char *flag)
+{
+    const char *query;
+    size_t flag_len;
+
+    if (!path || !flag) return 0;
+    query = strchr(path, '?');
+    if (!query) return 0;
+    query++;
+    flag_len = strlen(flag);
+    while (*query) {
+        const char *end = strchr(query, '&');
+        size_t len = end ? (size_t)(end - query) : strlen(query);
+        if (len == flag_len && !strncmp(query, flag, flag_len)) return 1;
+        if (!end) break;
+        query = end + 1;
+    }
+    return 0;
+}
+
+static void build_modem_control_json(const char *path, char *out, size_t outlen)
+{
+    int scan_requested = path_has_flag(path, "scan=1");
+    struct buf b = { out, outlen, 0 };
+
+    /* Never scan during normal DevUI polling: the stock scan can interrupt WWAN. */
+    if (scan_requested)
+        (void)system("ubus -t 5 call zte_nwinfo_api nwinfo_scan_nbr >/dev/null 2>&1 &");
+    bappend(&b, "{\"ok\":true,\"neighbor_source\":\"zte_nwinfo_api\",");
+    bappend(&b, "\"scan_requested\":%s,", scan_requested ? "true" : "false");
+    bappend(&b, "\"scan_warning\":\"manual scan may briefly interrupt WWAN\"}");
 }
 
 static int hex_val(char c)
@@ -1804,9 +1966,6 @@ static int parse_request_line(const char *req, char *method, size_t method_cap,
     if (sscanf(req, "%15s %255s", method, path) != 2) return -1;
     method[method_cap - 1] = 0;
     path[path_cap - 1] = 0;
-
-    char *q = strchr(path, '?');
-    if (q) *q = 0;
     return 0;
 }
 
@@ -1958,6 +2117,7 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
     char req[HTTP_REQ_MAX];
     char method[16];
     char path[256];
+    char modem_json[MODEM_RESPONSE_MAX];
 
     for (;;) {
         int cli_fd = accept(srv_fd, NULL, NULL);
@@ -1975,8 +2135,52 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
             continue;
         }
 
+        if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0) {
+            write_http_error(cli_fd, 405, "Method Not Allowed");
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strncmp(path, "/modem/control", strlen("/modem/control"))) {
+            if (strcmp(method, "POST") != 0) {
+                write_http_error(cli_fd, 405, "Method Not Allowed");
+                close(cli_fd);
+                continue;
+            }
+            build_modem_control_json(path, modem_json, sizeof modem_json);
+            (void)write_http_json(cli_fd, modem_json, strlen(modem_json));
+            close(cli_fd);
+            continue;
+        }
+
         if (strcmp(method, "GET") != 0) {
             write_http_error(cli_fd, 405, "Method Not Allowed");
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strcmp(path, "/modem/signal-metrics")) {
+            build_signal_metrics_json(modem_json, sizeof modem_json);
+            (void)write_http_json(cli_fd, modem_json, strlen(modem_json));
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strcmp(path, "/modem/latest-signals")) {
+            (void)write_http_text(cli_fd, "application/json; charset=utf-8",
+                                  "{\"lte\":null,\"nr\":null}\n");
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strncmp(path, "/modem/latest?", strlen("/modem/latest?"))) {
+            (void)write_http_text(cli_fd, "application/json; charset=utf-8", "null\n");
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strncmp(path, "/modem/recent?", strlen("/modem/recent?"))) {
+            (void)write_http_text(cli_fd, "application/json; charset=utf-8", "[]\n");
             close(cli_fd);
             continue;
         }
@@ -1998,7 +2202,9 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
                                   "zwrt-datad dev HTTP API\n"
                                   "GET /state   -> current JSON snapshot\n"
                                   "GET /events  -> SSE stream\n"
-                                  "GET /healthz -> ok\n");
+                                  "GET /healthz -> ok\n"
+                                  "GET /modem/signal-metrics -> U60 neighbor cache\n"
+                                  "POST /modem/control -> modem compatibility controls\n");
             close(cli_fd);
             continue;
         }

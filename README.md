@@ -8,6 +8,12 @@
 - `GET /events`：返回 `text/event-stream`，持续推送最新快照
 - `GET /healthz`：返回 `ok`
 
+Remix 版本另外提供 U60Pro DevUI 兼容接口：
+
+- `GET /modem/signal-metrics`：读取厂商邻区缓存并归一化 LTE/NR 邻区。
+- `POST /modem/control`：提供显式手动邻区扫描入口；常规轮询不会触发扫描。
+- `GET /modem/latest-signals`、`GET /modem/latest`、`GET /modem/recent`：为未启用本地信令解码器的设备返回稳定兼容结构。
+
 默认监听地址：
 
 - `http://127.0.0.1:9460`
@@ -52,6 +58,12 @@
 
 ```sh
 bash scripts/build.sh
+```
+
+主机侧 HTTP 接口回归测试：
+
+```sh
+./tests/test-http.sh
 ```
 
 主机侧语法检查：

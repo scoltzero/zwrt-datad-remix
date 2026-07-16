@@ -1,0 +1,27 @@
+#!/bin/sh
+
+[ -n "$UBUS_LOG" ] && printf '%s\n' "$*" >> "$UBUS_LOG"
+
+case "$*" in
+  *"zte_nwinfo_api nwinfo_get_netinfo"*)
+    if [ "$UBUS_NEIGHBOR_MODE" = empty ]; then
+      printf '%s\n' '{"network_type":"SA","nr5g_cell_id":43116896257}'
+    else
+      printf '%s\n' '{"network_type":"SA","nr5g_cell_id":43116896257,"nr_neighbor_cell":"654,152650,n28,-83,-12;227,504990,n41,-99;","lte_neighbor_cell":"145,1300,B3,-101,-14;"}'
+    fi
+    ;;
+  *"zte_nwinfo_api nwinfo_get_lte_nbr_contents"*)
+    if [ "$UBUS_NEIGHBOR_MODE" = empty ]; then printf '%s\n' '{}';
+    else printf '%s\n' '{"lte_nbr_contents":"145,1300,B3,-101,-14;"}'; fi
+    ;;
+  *"zte_nwinfo_api nwinfo_get_nr5g_nbr_contents"*)
+    if [ "$UBUS_NEIGHBOR_MODE" = empty ]; then printf '%s\n' '{}';
+    else printf '%s\n' '{"nr5g_nbr_contents":"654,152650,n28,-83,-12;227,504990,n41,-99;"}'; fi
+    ;;
+  *"system board"*)
+    printf '%s\n' '{"model":"U60 Pro","hostname":"u60pro","release":{"description":"OpenWrt test"}}'
+    ;;
+  *)
+    printf '%s\n' '{}'
+    ;;
+esac
