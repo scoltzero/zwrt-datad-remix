@@ -17,6 +17,7 @@ trap cleanup EXIT INT TERM
 mkdir -p "$TMP"
 
 cc -std=c11 -O0 -g -Wall -Wextra -Werror -Wno-unused-parameter \
+   -Wno-format-truncation \
    -D_GNU_SOURCE -I"$ROOT/include" "$ROOT"/src/*.c -o "$BIN"
 
 : > "$LOG"
@@ -53,6 +54,15 @@ assert status == 200 and body == "ok\n"
 status, body = request("/state")
 assert status == 200 and isinstance(json.loads(body), dict)
 
+status, body = request("/chart-metrics")
+chart = json.loads(body)
+assert status == 200
+assert set(chart) == {
+    "cpu_usage", "cpu_temp", "mem_used_pct", "rx_speed", "tx_speed",
+    "battery_temp", "bat_uv", "bat_ua"
+}
+assert all(isinstance(value, int) for value in chart.values())
+
 status, body = request("/modem/signal-metrics")
 data = json.loads(body)
 assert status == 200 and data["status"] == "ready"
@@ -70,6 +80,7 @@ control = json.loads(body)
 assert status == 200 and control["ok"] is True and control["scan_requested"] is True
 assert request("/modem/control")[0] == 405
 assert request("/state", "POST")[0] == 405
+assert request("/chart-metrics", "POST")[0] == 405
 
 assert json.loads(request("/modem/latest-signals")[1]) == {"lte": None, "nr": None}
 assert json.loads(request("/modem/latest?kind=lte_ml1_raw")[1]) is None

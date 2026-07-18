@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "datad": {
-    "version": "0.6.7-remix.2",
+    "version": "0.6.7-remix.3",
     "asset": "zwrt-datad-aarch64",
-    "notes": "增加 U60Pro 邻区和信令兼容接口"
+    "notes": "增加缓存图表指标接口，支持熄屏低资源采样"
   }
 }

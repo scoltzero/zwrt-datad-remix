@@ -2111,6 +2111,32 @@ static void broadcast_sse_snapshot(struct sse_client *clients, size_t nclients,
     }
 }
 
+/* Build the dark-screen chart response from the already collected snapshot.
+ * This endpoint must never issue ubus or filesystem reads of its own. */
+static void build_chart_metrics_json(const char *snap, char *out, size_t outlen)
+{
+    char system[1024] = "{}";
+    char traffic[1024] = "{}";
+    char battery[1024] = "{}";
+    struct buf b = { out, outlen, 0 };
+
+    (void)json_get(snap, "system", system, sizeof system);
+    (void)json_get(snap, "traffic", traffic, sizeof traffic);
+    (void)json_get(snap, "battery", battery, sizeof battery);
+    bappend(&b,
+            "{\"cpu_usage\":%ld,\"cpu_temp\":%ld,\"mem_used_pct\":%ld,"
+            "\"rx_speed\":%ld,\"tx_speed\":%ld,\"battery_temp\":%ld,"
+            "\"bat_uv\":%ld,\"bat_ua\":%ld}",
+            json_get_int(system, "cpu_usage", -1),
+            json_get_int(system, "cpu_temp", 0),
+            json_get_int(system, "mem_used_pct", -1),
+            json_get_int(traffic, "rx_speed", -1),
+            json_get_int(traffic, "tx_speed", -1),
+            json_get_int(battery, "temp", 0),
+            json_get_int(battery, "bat_uv", 0),
+            json_get_int(battery, "bat_ua", 0));
+}
+
 static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, size_t nclients,
                                       const char *snap, size_t snap_len)
 {
@@ -2191,6 +2217,13 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
             continue;
         }
 
+        if (!strcmp(path, "/chart-metrics")) {
+            build_chart_metrics_json(snap, modem_json, sizeof modem_json);
+            (void)write_http_json(cli_fd, modem_json, strlen(modem_json));
+            close(cli_fd);
+            continue;
+        }
+
         if (!strcmp(path, "/healthz")) {
             (void)write_http_text(cli_fd, "text/plain; charset=utf-8", "ok\n");
             close(cli_fd);
@@ -2201,6 +2234,7 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
             (void)write_http_text(cli_fd, "text/plain; charset=utf-8",
                                   "zwrt-datad dev HTTP API\n"
                                   "GET /state   -> current JSON snapshot\n"
+                                  "GET /chart-metrics -> compact cached chart snapshot\n"
                                   "GET /events  -> SSE stream\n"
                                   "GET /healthz -> ok\n"
                                   "GET /modem/signal-metrics -> U60 neighbor cache\n"
