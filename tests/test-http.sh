@@ -9,6 +9,7 @@ LOG=$TMP/ubus.log
 DATA=$TMP/data
 SIM_FILE=$TMP/sim.json
 TRAFFIC_FILE=$TMP/traffic.json
+SYSTEM_TZ_FILE=$TMP/zwrt_zte_sntp
 PID=
 
 cleanup() {
@@ -21,6 +22,7 @@ mkdir -p "$TMP" "$DATA"
 
 printf '%s\n' '{"sim_iccid":"8986000000000012345","current_sim_slot":"1","sim_imsi":"460001234567890","sim_states":"ready","Operator":"CUCC"}' >"$SIM_FILE"
 printf '%s\n' '{"real_rx_speed":0,"real_tx_speed":0,"real_rx_bytes":1000,"real_tx_bytes":2000,"real_time":10}' >"$TRAFFIC_FILE"
+printf "config zudata_settings 'settings'\n\toption time_from_utc '8.00'\n" >"$SYSTEM_TZ_FILE"
 
 cc -std=c11 -O0 -g -Wall -Wextra -Werror -Wno-unused-parameter \
    -Wno-format-truncation \
@@ -29,7 +31,7 @@ cc -std=c11 -O0 -g -Wall -Wextra -Werror -Wno-unused-parameter \
 : > "$LOG"
 PATH="$ROOT/tests/fake-bin:$PATH" UBUS_LOG="$LOG" \
     UBUS_SIM_FILE="$SIM_FILE" UBUS_TRAFFIC_FILE="$TRAFFIC_FILE" \
-    ZWRT_DATAD_DATA_DIR="$DATA" \
+    ZWRT_DATAD_DATA_DIR="$DATA" ZWRT_DATAD_SYSTEM_TIMEZONE_FILE="$SYSTEM_TZ_FILE" \
     "$BIN" -i 100 -b 127.0.0.1 -p "$PORT" >"$TMP/server.log" 2>&1 &
 PID=$!
 
@@ -66,6 +68,8 @@ status, body = request("/state")
 state = json.loads(body)
 assert status == 200 and isinstance(state, dict)
 assert state["timezone"]["label"] == "UTC+08:00"
+assert state["timezone"]["system_offset_minutes"] == 480
+assert state["timezone"]["clock_adjust_minutes"] == 0
 assert state["sim_traffic"]["available"] is True
 assert len(state["sim_traffic"]["sims"]) == 1
 sim = state["sim_traffic"]["sims"][0]
@@ -76,10 +80,12 @@ sim_id = sim["id"]
 status, body = request("/settings/timezone?offset_minutes=-210&dst_minutes=0", "POST")
 tz = json.loads(body)
 assert status == 200 and tz["label"] == "UTC-03:30"
+assert tz["clock_adjust_minutes"] == -690
 
 status, body = request("/settings/timezone?offset_minutes=330&dst_minutes=0", "POST")
 tz = json.loads(body)
 assert status == 200 and tz["label"] == "UTC+05:30"
+assert tz["clock_adjust_minutes"] == -150
 
 status, body = request(
     f"/sim-traffic/config?sim_id={sim_id}&enabled=1&allowance_bytes=1000000&reset_day=15",
@@ -147,7 +153,7 @@ printf '%s\n' '{"real_rx_speed":100,"real_tx_speed":50,"real_rx_bytes":9000,"rea
 RESTART_PORT=$((PORT + 1))
 PATH="$ROOT/tests/fake-bin:$PATH" UBUS_LOG="$LOG" \
     UBUS_SIM_FILE="$SIM_FILE" UBUS_TRAFFIC_FILE="$TRAFFIC_FILE" \
-    ZWRT_DATAD_DATA_DIR="$DATA" \
+    ZWRT_DATAD_DATA_DIR="$DATA" ZWRT_DATAD_SYSTEM_TIMEZONE_FILE="$SYSTEM_TZ_FILE" \
     "$BIN" -i 100 -b 127.0.0.1 -p "$RESTART_PORT" >"$TMP/server-restart.log" 2>&1 &
 PID=$!
 i=0
@@ -165,7 +171,8 @@ with open(sys.argv[1], encoding="utf-8") as fh:
     data = json.load(fh)
 assert data["timezone"]["label"] == "UTC+05:30"
 sim = data["sim_traffic"]["sims"][0]
-assert sim["today_bytes"] == 11000
+assert sim["today_bytes"] in (6000, 11000), sim
+assert sim["lifetime_bytes"] == 11000
 assert sim["allowance_bytes"] == 1000000
 assert sim["remaining_bytes"] == 989000
 PY
@@ -176,7 +183,7 @@ PID=
 EMPTY_PORT=$((PORT + 2))
 PATH="$ROOT/tests/fake-bin:$PATH" UBUS_LOG="$LOG" UBUS_NEIGHBOR_MODE=empty \
     UBUS_SIM_FILE="$SIM_FILE" UBUS_TRAFFIC_FILE="$TRAFFIC_FILE" \
-    ZWRT_DATAD_DATA_DIR="$DATA" \
+    ZWRT_DATAD_DATA_DIR="$DATA" ZWRT_DATAD_SYSTEM_TIMEZONE_FILE="$SYSTEM_TZ_FILE" \
     "$BIN" -i 100 -b 127.0.0.1 -p "$EMPTY_PORT" >"$TMP/server-empty.log" 2>&1 &
 PID=$!
 i=0

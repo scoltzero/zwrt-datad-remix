@@ -26,6 +26,7 @@
 #define USAGE_PERSIST_SEC 300
 #define USAGE_JSON_MAX 65536
 #define USAGE_DEFAULT_DIR "/data/plugins/zwrt-datad"
+#define USAGE_SYSTEM_TIMEZONE_FILE "/etc/config/zwrt_zte_sntp"
 
 struct usage_buf {
     char *data;
@@ -81,6 +82,7 @@ static int g_identity_initialized;
 
 static int g_offset_minutes = 480;
 static int g_dst_minutes;
+static int g_system_offset_minutes;
 static int g_dirty;
 static time_t g_last_persist;
 
@@ -216,6 +218,86 @@ static int read_file(const char *path, char *out, size_t outlen)
     out[n] = 0;
     fclose(fp);
     return n > 0;
+}
+
+static int uci_option_value(const char *text, const char *name, char *out, size_t outlen)
+{
+    const char *line = text;
+    size_t name_len = strlen(name);
+
+    while (line && *line) {
+        const char *end = strchr(line, '\n');
+        const char *p = line;
+        const char *value_end;
+        char quote = 0;
+        size_t len;
+
+        if (!end) end = line + strlen(line);
+        while (p < end && isspace((unsigned char)*p)) p++;
+        if ((size_t)(end - p) > 6 && !strncmp(p, "option", 6) &&
+            isspace((unsigned char)p[6])) {
+            p += 6;
+            while (p < end && isspace((unsigned char)*p)) p++;
+            if ((size_t)(end - p) >= name_len && !strncmp(p, name, name_len) &&
+                (p + name_len == end || isspace((unsigned char)p[name_len]))) {
+                p += name_len;
+                while (p < end && isspace((unsigned char)*p)) p++;
+                if (p < end && (*p == '\'' || *p == '"')) quote = *p++;
+                value_end = p;
+                if (quote) {
+                    while (value_end < end && *value_end != quote) value_end++;
+                } else {
+                    while (value_end < end && !isspace((unsigned char)*value_end) &&
+                           *value_end != '#') value_end++;
+                }
+                len = (size_t)(value_end - p);
+                if (len && len < outlen) {
+                    memcpy(out, p, len);
+                    out[len] = 0;
+                    return 1;
+                }
+            }
+        }
+        line = *end ? end + 1 : NULL;
+    }
+    return 0;
+}
+
+static int parse_utc_offset_minutes(const char *value, int *out)
+{
+    char *end;
+    double hours;
+    int minutes;
+
+    if (!value || !*value || !out) return 0;
+    errno = 0;
+    hours = strtod(value, &end);
+    while (end && isspace((unsigned char)*end)) end++;
+    if (errno || end == value || (end && *end) || hours < -12.0 || hours > 14.0)
+        return 0;
+    minutes = (int)(hours * 60.0 + (hours < 0 ? -0.5 : 0.5));
+    if (minutes < -720 || minutes > 840) return 0;
+    *out = minutes;
+    return 1;
+}
+
+static void load_system_clock_offset(void)
+{
+    const char *path = getenv("ZWRT_DATAD_SYSTEM_TIMEZONE_FILE");
+    char config[4096], value[64];
+    int offset;
+
+    g_system_offset_minutes = 0;
+    if (!path || !*path) path = USAGE_SYSTEM_TIMEZONE_FILE;
+    if (!read_file(path, config, sizeof config)) return;
+    if (uci_option_value(config, "time_from_utc", value, sizeof value) &&
+        parse_utc_offset_minutes(value, &offset)) {
+        g_system_offset_minutes = offset;
+        return;
+    }
+    if (uci_option_value(config, "timezone", value, sizeof value) &&
+        parse_utc_offset_minutes(value, &offset))
+        g_system_offset_minutes = offset;
 }
 
 static int atomic_write(const char *path, const char *data, size_t len)
@@ -427,9 +509,14 @@ int usage_effective_offset_minutes(void)
     return g_offset_minutes + g_dst_minutes;
 }
 
+static int usage_clock_adjust_minutes(void)
+{
+    return usage_effective_offset_minutes() - g_system_offset_minutes;
+}
+
 void usage_localtime(time_t when, struct tm *out)
 {
-    time_t adjusted = when + (time_t)usage_effective_offset_minutes() * 60;
+    time_t adjusted = when + (time_t)usage_clock_adjust_minutes() * 60;
     gmtime_r(&adjusted, out);
 }
 
@@ -467,7 +554,7 @@ static time_t local_midnight_epoch(int year, int month, int day)
     tmv.tm_year = year - 1900;
     tmv.tm_mon = month - 1;
     tmv.tm_mday = day;
-    return timegm(&tmv) - (time_t)usage_effective_offset_minutes() * 60;
+    return timegm(&tmv) - (time_t)usage_clock_adjust_minutes() * 60;
 }
 
 static void cycle_window(time_t now, int reset_day, int *key, int64_t *start, int64_t *end)
@@ -596,6 +683,7 @@ void usage_init(void)
     snprintf(g_state_path, sizeof g_state_path, "%s/traffic-state.json", g_data_dir);
     snprintf(g_plan_path, sizeof g_plan_path, "%s/traffic-config.json", g_data_dir);
     snprintf(g_timezone_path, sizeof g_timezone_path, "%s/timezone.json", g_data_dir);
+    load_system_clock_offset();
     load_timezone();
     load_plans();
     load_records();
@@ -690,8 +778,10 @@ void usage_build_timezone_json(char *out, size_t outlen)
     struct usage_buf b = { out, outlen, 0 };
     timezone_label(label, sizeof label);
     ub_append(&b, "{\"mode\":\"fixed_offset\",\"offset_minutes\":%d,\"dst_minutes\":%d,"
-              "\"effective_offset_minutes\":%d,\"label\":",
-              g_offset_minutes, g_dst_minutes, usage_effective_offset_minutes());
+              "\"effective_offset_minutes\":%d,\"system_offset_minutes\":%d,"
+              "\"clock_adjust_minutes\":%d,\"label\":",
+              g_offset_minutes, g_dst_minutes, usage_effective_offset_minutes(),
+              g_system_offset_minutes, usage_clock_adjust_minutes());
     ub_json_string(&b, label);
     ub_append(&b, "}");
 }
