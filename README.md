@@ -13,6 +13,12 @@ Remix 版本另外提供 U60Pro DevUI 兼容接口：
 - `GET /modem/signal-metrics`：读取厂商邻区缓存并归一化 LTE/NR 邻区。
 - `POST /modem/control`：提供显式手动邻区扫描入口；常规轮询不会触发扫描。
 - `GET /modem/latest-signals`、`GET /modem/latest`、`GET /modem/recent`：为未启用本地信令解码器的设备返回稳定兼容结构。
+- `GET/POST /settings/timezone`：读取或保存 DevUI 固定偏移时区，不修改系统 `TZ`。
+- `GET /sim-traffic`：读取按 ICCID 分开的今日、套餐周期和长期蜂窝流量。
+- `POST /sim-traffic/config`：为指定 SIM 保存套餐额度和每月重置日。
+
+持久状态默认保存在 `/data/plugins/zwrt-datad`。普通流量采样只更新内存，最多每 5 分钟写盘；
+SIM 身份变化和正常退出会强制保存，设备重启后不会从零开始统计。
 
 默认监听地址：
 
@@ -69,7 +75,7 @@ bash scripts/build.sh
 主机侧语法检查：
 
 ```sh
-cc -std=c11 -Wall -Wextra -Werror -Iinclude -c src/json.c src/main.c
+cc -std=c11 -Wall -Wextra -Werror -Iinclude -c src/json.c src/main.c src/usage.c
 ```
 
 ## 运行

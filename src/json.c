@@ -5,6 +5,7 @@
  */
 #include "json.h"
 #include <ctype.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -217,4 +218,17 @@ long json_get_int(const char *json, const char *key, long def)
     char *end;
     long v = strtol(buf, &end, 10);
     return (end == buf) ? def : v;
+}
+
+int json_get_u64(const char *json, const char *key, uint64_t *out)
+{
+    char buf[64];
+    char *end;
+    unsigned long long value;
+    if (!out || !json_get(json, key, buf, sizeof buf) || buf[0] == '-') return 0;
+    errno = 0;
+    value = strtoull(buf, &end, 10);
+    if (errno || end == buf || *end) return 0;
+    *out = (uint64_t)value;
+    return 1;
 }

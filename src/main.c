@@ -9,6 +9,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "json.h"
+#include "usage.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -1209,16 +1210,24 @@ static void rescan_qos_cache(void)
 static int read_sim_signature(char *out, size_t outlen)
 {
     char sim[RAW_MAX];
-    char iccid[64], slot[16], imsi[32], state[32];
+    char iccid[64], slot[16], imsi[32], state[32], operator_name[64];
+    int slot_num;
 
     out[0] = 0;
-    if (run_ubus("zwrt_zte_mdm.api", "get_sim_info", NULL, sim, sizeof sim) != 0)
+    if (run_ubus("zwrt_zte_mdm.api", "get_sim_info", NULL, sim, sizeof sim) != 0) {
+        usage_set_identity("", "", 0);
         return 0;
+    }
 
     if (!json_get(sim, "sim_iccid", iccid, sizeof iccid)) iccid[0] = 0;
     if (!json_get(sim, "current_sim_slot", slot, sizeof slot)) slot[0] = 0;
     if (!json_get(sim, "sim_imsi", imsi, sizeof imsi)) imsi[0] = 0;
     if (!json_get(sim, "sim_states", state, sizeof state)) state[0] = 0;
+    slot_num = atoi(slot);
+    operator_name[0] = 0;
+    if (slot_num == 2) json_get(sim, "Operator2", operator_name, sizeof operator_name);
+    if (!operator_name[0]) json_get(sim, "Operator", operator_name, sizeof operator_name);
+    usage_set_identity(iccid, operator_name, slot_num);
 
     if (!iccid[0] && !slot[0] && !imsi[0] && !state[0]) return 0;
     snprintf(out, outlen, "slot=%s|iccid=%s|imsi=%s|state=%s",
@@ -1671,6 +1680,8 @@ static void build_snapshot(char *out, size_t outlen,
                            int with_common, const char *common_cache,
                            int with_imei, const char *imei_cache)
 {
+    static char usage_timezone[256];
+    static char usage_traffic[32768];
     char net[RAW_MAX], batt[RAW_MAX], chg[RAW_MAX], therm[1024];
     char rnum[1024], rstat[1024], traf[RAW_MAX], sysinfo[2048], usb[1024], nfc[1024];
     char wifi_ssid[128], wifi_key[128], wifi_enc[64];
@@ -1706,6 +1717,7 @@ static void build_snapshot(char *out, size_t outlen,
     /* type:1 = realtime session stats; cid:1 = main PDN (rmnet_data0). */
     run_ubus("zwrt_data", "get_wwandst",
              "{\"source_module\":\"deviceui\",\"cid\":1,\"type\":1}", traf, sizeof traf);
+    usage_sample(traf, time(NULL));
     run_ubus("system", "info", NULL, sysinfo, sizeof sysinfo);
     run_ubus("zwrt_bsp.usb", "list", NULL, usb, sizeof usb);
     run_ubus("zwrt_nfc", "zwrt_nfc_wifi_get", NULL, nfc, sizeof nfc);
@@ -1803,6 +1815,11 @@ static void build_snapshot(char *out, size_t outlen,
     emit_int(&b, "tx_bytes", traf, "real_tx_bytes", 0);         bappend(&b, ",");
     emit_int(&b, "session_time", traf, "real_time", 0);
     bappend(&b, "},");
+
+    usage_build_timezone_json(usage_timezone, sizeof usage_timezone);
+    usage_build_traffic_json(usage_traffic, sizeof usage_traffic);
+    bappend(&b, "\"timezone\":%s,", usage_timezone);
+    bappend(&b, "\"sim_traffic\":%s,", usage_traffic);
 
     /* qos: last known bearer/QoS values cached from modem key.log */
     bappend(&b, "\"qos\":{");
@@ -2014,6 +2031,25 @@ static int write_http_json(int fd, const char *snap, size_t snap_len)
     return write_all(fd, snap, snap_len);
 }
 
+static int write_http_json_status(int fd, int code, const char *body)
+{
+    char hdr[256];
+    const char *reason = code == 200 ? "OK" : code == 400 ? "Bad Request" :
+                         code == 409 ? "Conflict" : "Internal Server Error";
+    size_t body_len = strlen(body);
+    int n = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 %d %s\r\n"
+                     "Content-Type: application/json; charset=utf-8\r\n"
+                     "Cache-Control: no-store\r\n"
+                     "Connection: close\r\n"
+                     "Content-Length: %zu\r\n"
+                     "\r\n",
+                     code, reason, body_len);
+    if (n <= 0) return -1;
+    if (write_all(fd, hdr, (size_t)n) < 0) return -1;
+    return write_all(fd, body, body_len);
+}
+
 static int write_sse_handshake(int fd)
 {
     static const char hdr[] =
@@ -2179,6 +2215,42 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
             continue;
         }
 
+        if (!strncmp(path, "/settings/timezone", strlen("/settings/timezone"))) {
+            int status = 200;
+            if (!strcmp(method, "POST"))
+                status = usage_set_timezone_from_path(path, modem_json, sizeof modem_json);
+            else
+                usage_build_timezone_json(modem_json, sizeof modem_json);
+            (void)write_http_json_status(cli_fd, status, modem_json);
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strncmp(path, "/sim-traffic/config", strlen("/sim-traffic/config"))) {
+            int status;
+            if (strcmp(method, "POST") != 0) {
+                write_http_error(cli_fd, 405, "Method Not Allowed");
+                close(cli_fd);
+                continue;
+            }
+            status = usage_set_plan_from_path(path, modem_json, sizeof modem_json);
+            (void)write_http_json_status(cli_fd, status, modem_json);
+            close(cli_fd);
+            continue;
+        }
+
+        if (!strncmp(path, "/sim-traffic", strlen("/sim-traffic"))) {
+            if (strcmp(method, "GET") != 0) {
+                write_http_error(cli_fd, 405, "Method Not Allowed");
+                close(cli_fd);
+                continue;
+            }
+            usage_build_traffic_json(modem_json, sizeof modem_json);
+            (void)write_http_json(cli_fd, modem_json, strlen(modem_json));
+            close(cli_fd);
+            continue;
+        }
+
         if (strcmp(method, "GET") != 0) {
             write_http_error(cli_fd, 405, "Method Not Allowed");
             close(cli_fd);
@@ -2238,7 +2310,10 @@ static void accept_ready_http_clients(int srv_fd, struct sse_client *clients, si
                                   "GET /events  -> SSE stream\n"
                                   "GET /healthz -> ok\n"
                                   "GET /modem/signal-metrics -> U60 neighbor cache\n"
-                                  "POST /modem/control -> modem compatibility controls\n");
+                                  "POST /modem/control -> modem compatibility controls\n"
+                                  "GET/POST /settings/timezone -> fixed display timezone\n"
+                                  "GET /sim-traffic -> persistent per-SIM usage\n"
+                                  "POST /sim-traffic/config -> package settings\n");
             close(cli_fd);
             continue;
         }
@@ -2379,6 +2454,8 @@ int main(int argc, char **argv)
     signal(SIGUSR1, on_qos_signal);
     signal(SIGPIPE, SIG_IGN);
 
+    usage_init();
+
     int srv_fd = -1;
     struct sse_client clients[HTTP_MAX_CLIENTS];
     for (size_t i = 0; i < HTTP_MAX_CLIENTS; i++) clients[i].fd = -1;
@@ -2489,5 +2566,6 @@ int main(int argc, char **argv)
 
     for (size_t i = 0; i < HTTP_MAX_CLIENTS; i++) sse_client_close(&clients[i]);
     if (srv_fd >= 0) close(srv_fd);
+    usage_flush(1);
     return 0;
 }

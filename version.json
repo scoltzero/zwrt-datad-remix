@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "datad": {
-    "version": "0.6.7-remix.3",
+    "version": "0.6.7-remix.4",
     "asset": "zwrt-datad-aarch64",
-    "notes": "增加缓存图表指标接口，支持熄屏低资源采样"
+    "notes": "增加按 ICCID 持久流量统计、套餐配置和固定偏移时区接口"
   }
 }

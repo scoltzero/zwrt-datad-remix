@@ -3,6 +3,20 @@
 [ -n "$UBUS_LOG" ] && printf '%s\n' "$*" >> "$UBUS_LOG"
 
 case "$*" in
+  *"zwrt_zte_mdm.api get_sim_info"*)
+    if [ -n "${UBUS_SIM_FILE:-}" ] && [ -f "$UBUS_SIM_FILE" ]; then
+      cat "$UBUS_SIM_FILE"
+    else
+      printf '%s\n' '{"sim_iccid":"8986000000000012345","current_sim_slot":"1","sim_imsi":"460001234567890","sim_states":"ready","Operator":"CUCC"}'
+    fi
+    ;;
+  *"zwrt_data get_wwandst"*)
+    if [ -n "${UBUS_TRAFFIC_FILE:-}" ] && [ -f "$UBUS_TRAFFIC_FILE" ]; then
+      cat "$UBUS_TRAFFIC_FILE"
+    else
+      printf '%s\n' '{"real_rx_speed":0,"real_tx_speed":0,"real_rx_bytes":1000,"real_tx_bytes":2000,"real_time":10}'
+    fi
+    ;;
   *"zte_nwinfo_api nwinfo_get_netinfo"*)
     if [ "$UBUS_NEIGHBOR_MODE" = empty ]; then
       printf '%s\n' '{"network_type":"SA","nr5g_cell_id":43116896257}'
