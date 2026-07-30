@@ -68,8 +68,8 @@ status, body = request("/state")
 state = json.loads(body)
 assert status == 200 and isinstance(state, dict)
 assert state["timezone"]["label"] == "UTC+08:00"
-assert state["timezone"]["system_offset_minutes"] == 480
-assert state["timezone"]["clock_adjust_minutes"] == 0
+assert state["timezone"]["system_offset_minutes"] == 0
+assert state["timezone"]["clock_adjust_minutes"] == 480
 assert state["sim_traffic"]["available"] is True
 assert len(state["sim_traffic"]["sims"]) == 1
 sim = state["sim_traffic"]["sims"][0]
@@ -80,12 +80,12 @@ sim_id = sim["id"]
 status, body = request("/settings/timezone?offset_minutes=-210&dst_minutes=0", "POST")
 tz = json.loads(body)
 assert status == 200 and tz["label"] == "UTC-03:30"
-assert tz["clock_adjust_minutes"] == -690
+assert tz["clock_adjust_minutes"] == -210
 
 status, body = request("/settings/timezone?offset_minutes=330&dst_minutes=0", "POST")
 tz = json.loads(body)
 assert status == 200 and tz["label"] == "UTC+05:30"
-assert tz["clock_adjust_minutes"] == -150
+assert tz["clock_adjust_minutes"] == 330
 
 status, body = request(
     f"/sim-traffic/config?sim_id={sim_id}&enabled=1&allowance_bytes=1000000&reset_day=15",

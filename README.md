@@ -20,6 +20,10 @@ Remix 版本另外提供 U60Pro DevUI 兼容接口：
 持久状态默认保存在 `/data/plugins/zwrt-datad`。普通流量采样只更新内存，最多每 5 分钟写盘；
 SIM 身份变化和正常退出会强制保存，设备重启后不会从零开始统计。
 
+固定偏移时区始终以 Unix UTC epoch 为基准。厂商 `zwrt_zte_sntp` 中的 `timezone` 和
+`time_from_utc` 只是 SNTP 设置，不再被当成底层 epoch 偏移，避免网络校时或 Mihomo
+启动后屏幕时间与流量日周期突然相差 8 小时。
+
 默认监听地址：
 
 - `http://127.0.0.1:9460`

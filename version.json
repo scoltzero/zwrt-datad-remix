@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "datad": {
-    "version": "0.6.7-remix.4",
+    "version": "0.6.7-remix.5",
     "asset": "zwrt-datad-aarch64",
-    "notes": "增加按 ICCID 持久流量统计、套餐配置和固定偏移时区接口"
+    "notes": "修复 SNTP 校时后 DevUI 时区和流量周期回退 UTC 的问题"
   }
 }
